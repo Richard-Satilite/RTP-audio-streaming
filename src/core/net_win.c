@@ -1,15 +1,31 @@
+#ifdef _WIN32
+
 #include "ac/net.h"
 
-#include <arpa/inet.h>
-#include <errno.h>
-#include <netinet/in.h>
-#include <stddef.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <sys/time.h>
-#include <unistd.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
+#define AC_NET_INVALID_SOCKET ((intptr_t)INVALID_SOCKET)
+
+static int ac_net_wsa_startup(void)
+{
+    static int initialized = 0;
+    WSADATA data;
+
+    if (initialized) {
+        return AC_NET_OK;
+    }
+
+    if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
+        return AC_NET_ERR;
+    }
+
+    initialized = 1;
+    return AC_NET_OK;
+}
 
 static int ac_net_endpoint_to_addr(const ac_net_endpoint_t *endpoint,
                                    struct sockaddr_in *addr)
@@ -22,7 +38,7 @@ static int ac_net_endpoint_to_addr(const ac_net_endpoint_t *endpoint,
     addr->sin_family = AF_INET;
     addr->sin_port = htons(endpoint->port);
 
-    if (inet_pton(AF_INET, endpoint->ip, &addr->sin_addr) != 1) {
+    if (InetPtonA(AF_INET, endpoint->ip, &addr->sin_addr) != 1) {
         return AC_NET_ADDR_INVALID;
     }
 
@@ -31,41 +47,51 @@ static int ac_net_endpoint_to_addr(const ac_net_endpoint_t *endpoint,
 
 int ac_net_udp_open_sender(ac_udp_socket_t *sock)
 {
-    int fd;
+    SOCKET s;
 
     if (sock == NULL) {
         return AC_NET_ERR;
     }
 
-    fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) {
-        sock->fd = -1;
+    if (ac_net_wsa_startup() != AC_NET_OK) {
+        sock->fd = AC_NET_INVALID_SOCKET;
         return AC_NET_ERR;
     }
 
-    sock->fd = fd;
+    s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (s == INVALID_SOCKET) {
+        sock->fd = AC_NET_INVALID_SOCKET;
+        return AC_NET_ERR;
+    }
+
+    sock->fd = (intptr_t)s;
     return AC_NET_OK;
 }
 
 int ac_net_udp_open_receiver(ac_udp_socket_t *sock, uint16_t listen_port)
 {
-    int fd;
-    int reuse = 1;
+    SOCKET s;
+    BOOL reuse = TRUE;
     struct sockaddr_in addr;
 
     if (sock == NULL || listen_port == 0) {
         return AC_NET_ERR;
     }
 
-    fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) {
-        sock->fd = -1;
+    if (ac_net_wsa_startup() != AC_NET_OK) {
+        sock->fd = AC_NET_INVALID_SOCKET;
         return AC_NET_ERR;
     }
 
-    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
-        close(fd);
-        sock->fd = -1;
+    s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (s == INVALID_SOCKET) {
+        sock->fd = AC_NET_INVALID_SOCKET;
+        return AC_NET_ERR;
+    }
+
+    if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&reuse, sizeof(reuse)) != 0) {
+        closesocket(s);
+        sock->fd = AC_NET_INVALID_SOCKET;
         return AC_NET_ERR;
     }
 
@@ -74,33 +100,33 @@ int ac_net_udp_open_receiver(ac_udp_socket_t *sock, uint16_t listen_port)
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
     addr.sin_port = htons(listen_port);
 
-    if (bind(fd, (const struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        close(fd);
-        sock->fd = -1;
+    if (bind(s, (const struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        closesocket(s);
+        sock->fd = AC_NET_INVALID_SOCKET;
         return AC_NET_ERR;
     }
 
-    sock->fd = fd;
+    sock->fd = (intptr_t)s;
     return AC_NET_OK;
 }
 
 int ac_net_udp_set_timeout(ac_udp_socket_t *sock, uint32_t timeout_ms)
 {
-    struct timeval tv;
-    if (sock == NULL || sock->fd < 0) return AC_NET_ERR;
-    tv.tv_sec = (time_t)(timeout_ms / 1000u);
-    tv.tv_usec = (suseconds_t)((timeout_ms % 1000u) * 1000u);
-    return setsockopt(sock->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0 ? AC_NET_OK : AC_NET_ERR;
+    DWORD timeout;
+    if (sock == NULL || sock->fd == AC_NET_INVALID_SOCKET) return AC_NET_ERR;
+    timeout = (DWORD)timeout_ms;
+    return setsockopt((SOCKET)sock->fd, SOL_SOCKET, SO_RCVTIMEO,
+                      (const char *)&timeout, sizeof(timeout)) == 0 ? AC_NET_OK : AC_NET_ERR;
 }
 
 void ac_net_udp_close(ac_udp_socket_t *sock)
 {
-    if (sock == NULL || sock->fd < 0) {
+    if (sock == NULL || sock->fd == AC_NET_INVALID_SOCKET) {
         return;
     }
 
-    close(sock->fd);
-    sock->fd = -1;
+    closesocket((SOCKET)sock->fd);
+    sock->fd = AC_NET_INVALID_SOCKET;
 }
 
 int ac_net_destination_add(ac_net_destination_list_t *list,
@@ -143,10 +169,14 @@ int ac_net_udp_send_to(ac_udp_socket_t *sock,
                        const uint8_t *data,
                        size_t len)
 {
-    ssize_t sent;
+    int sent;
     struct sockaddr_in addr;
 
-    if (sock == NULL || sock->fd < 0 || data == NULL || len == 0) {
+    if (sock == NULL || sock->fd == AC_NET_INVALID_SOCKET || data == NULL || len == 0) {
+        return AC_NET_ERR;
+    }
+
+    if (len > INT_MAX) {
         return AC_NET_ERR;
     }
 
@@ -154,13 +184,13 @@ int ac_net_udp_send_to(ac_udp_socket_t *sock,
         return AC_NET_ADDR_INVALID;
     }
 
-    sent = sendto(sock->fd,
-                  data,
-                  len,
+    sent = sendto((SOCKET)sock->fd,
+                  (const char *)data,
+                  (int)len,
                   0,
                   (const struct sockaddr *)&addr,
                   sizeof(addr));
-    if (sent < 0 || (size_t)sent != len) {
+    if (sent == SOCKET_ERROR || (size_t)sent != len) {
         return AC_NET_ERR;
     }
 
@@ -193,32 +223,37 @@ int ac_net_udp_recv(ac_udp_socket_t *sock,
                     size_t cap,
                     ac_net_endpoint_t *from)
 {
-    ssize_t received;
+    int received;
     struct sockaddr_in addr;
-    socklen_t addr_len = sizeof(addr);
+    int addr_len = sizeof(addr);
 
-    if (sock == NULL || sock->fd < 0 || buf == NULL || cap == 0) {
+    if (sock == NULL || sock->fd == AC_NET_INVALID_SOCKET || buf == NULL || cap == 0) {
         return AC_NET_ERR;
     }
 
-    received = recvfrom(sock->fd,
-                        buf,
-                        cap,
+    if (cap > INT_MAX) {
+        return AC_NET_ERR;
+    }
+
+    received = recvfrom((SOCKET)sock->fd,
+                        (char *)buf,
+                        (int)cap,
                         0,
                         (struct sockaddr *)&addr,
                         &addr_len);
-    if (received < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+    if (received == SOCKET_ERROR) {
+        int err = WSAGetLastError();
+        if (err == WSAEWOULDBLOCK || err == WSAETIMEDOUT) {
             return AC_NET_TIMEOUT;
         }
         return AC_NET_ERR;
     }
 
     if (from != NULL) {
-        const char *ip = inet_ntop(AF_INET,
+        const char *ip = InetNtopA(AF_INET,
                                    &addr.sin_addr,
                                    from->ip,
-                                   sizeof(from->ip));
+                                   (DWORD)sizeof(from->ip));
         if (ip == NULL) {
             from->ip[0] = '\0';
             from->port = 0;
@@ -227,5 +262,7 @@ int ac_net_udp_recv(ac_udp_socket_t *sock,
         from->port = ntohs(addr.sin_port);
     }
 
-    return (int)received;
+    return received;
 }
+
+#endif

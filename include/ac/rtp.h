@@ -1,4 +1,9 @@
-// rtp.h
+#pragma once
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
 typedef struct {
     uint8_t pt; bool marker; uint16_t seq; uint32_t ts, ssrc;
     const uint8_t* payload; size_t payload_len;

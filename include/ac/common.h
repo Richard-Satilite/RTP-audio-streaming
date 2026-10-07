@@ -1,4 +1,9 @@
-// common.h
+#pragma once
+
+#include <stdint.h>
+
+#include "ac/net.h"
+
 #define AC_SAMPLE_RATE   48000
 #define AC_CHANNELS      2
 #define AC_BYTES_PER_FRAME (AC_CHANNELS * 2)   // native s16
@@ -8,10 +13,9 @@
 
 typedef struct {
     // sender
-    char     dest_ip[64];
-    uint16_t dest_port;
-    char     device_substr[128];
-    int      frame_ms_x10;     // 25 = 2,5 ms; 50 = 5 ms (L16 stereo limit on the MTU)
+    ac_net_endpoint_t destination;
+    char              device_substr[128];
+    int               frame_ms_x10;     // 25 = 2,5 ms; 50 = 5 ms (L16 stereo limit on the MTU)
     // receiver
     uint16_t listen_port;
     int      prebuf_ms;

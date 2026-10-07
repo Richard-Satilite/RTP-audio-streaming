@@ -1,0 +1,8 @@
+v=0
+o=- 0 0 IN IP4 0.0.0.0
+s=RTP Audio L16
+i=Unicast L16 audio stream
+t=0 0
+m=audio 5004 RTP/AVP 96
+a=rtpmap:96 L16/48000/2
+a=ptime:5
